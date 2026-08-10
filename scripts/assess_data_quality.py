@@ -3,9 +3,10 @@
 This script loads the raw dataset through the reusable
 ``churner.data.load_dataset.load_dataset`` function and reports observations
 about its size, duplication, missing values, categorical value distributions,
-and explicit semantic consistency rules. It never modifies, cleans, or
-transforms the data, and it draws no conclusion about whether the dataset is
-acceptable; it reports evidence only, for manual review.
+explicit semantic consistency rules, and the numeric readability of
+``TotalCharges``. It never modifies, cleans, or transforms the data, and it
+draws no conclusion about whether the dataset is acceptable; it reports
+evidence only, for manual review.
 """
 
 # --- Standard library imports ---
@@ -37,10 +38,13 @@ DATASET_PATH = PROJECT_ROOT / "data" / "raw" / "WA_Fn-UseC_-Telco-Customer-Churn
 # Identifier column expected to be unique per customer.
 ID_COLUMN = "customerID"
 
+# Amount that the raw file stores as text but that is semantically numeric.
+TOTAL_CHARGES_COLUMN = "TotalCharges"
+
 # Text columns kept out of the categorical profile. ``customerID`` is a
 # per-customer identifier, and ``TotalCharges`` is a continuous amount that
 # pandas reads as text, so neither describes a category worth enumerating.
-NON_CATEGORICAL_TEXT_COLUMNS = (ID_COLUMN, "TotalCharges")
+NON_CATEGORICAL_TEXT_COLUMNS = (ID_COLUMN, TOTAL_CHARGES_COLUMN)
 
 # --- Semantic rule: customers without internet service ---
 # Categorical profiling showed ``InternetService == "No"`` in 1,526 rows and
@@ -66,6 +70,18 @@ PHONE_SERVICE_COLUMN = "PhoneService"
 NO_PHONE_SERVICE = "No"
 MULTIPLE_LINES_COLUMN = "MultipleLines"
 NO_PHONE_DEPENDENT_VALUE = "No phone service"
+
+# --- Numeric readability of TotalCharges ---
+# Columns shown for each affected record, so a reviewer has enough context to
+# interpret the value by hand instead of relying on the count alone.
+TOTAL_CHARGES_CONTEXT_COLUMNS = [
+    ID_COLUMN,
+    "tenure",
+    "MonthlyCharges",
+    TOTAL_CHARGES_COLUMN,
+    "Churn",
+]
+TOTAL_CHARGES_SAMPLE_SIZE = 10
 
 
 def count_duplicate_rows(df: pd.DataFrame) -> int:
@@ -231,6 +247,75 @@ def print_semantic_consistency_checks(df: pd.DataFrame) -> None:
     print_no_phone_rule(df)
 
 
+def find_blank_values(series: pd.Series) -> pd.Series:
+    """Flag entries that are present but empty or whitespace-only."""
+    return series.notna() & (series.astype(str).str.strip() == "")
+
+
+def find_total_charges_issues(df: pd.DataFrame) -> dict[str, pd.Series]:
+    """Group ``TotalCharges`` rows by how they respond to numeric conversion.
+
+    ``TotalCharges`` is treated as semantically numeric even though the raw
+    file stores it as text. Conversion runs on a derived Series with
+    ``errors="coerce"``, so the original column is never written to. Returns
+    boolean masks keyed by ``missing``, ``blank``, ``non_numeric``, and
+    ``convertible``; the first three are mutually exclusive.
+    """
+    total_charges = df[TOTAL_CHARGES_COLUMN]
+    numeric_attempt = pd.to_numeric(total_charges, errors="coerce")
+
+    missing = total_charges.isna()
+    blank = find_blank_values(total_charges)
+
+    return {
+        "missing": missing,
+        "blank": blank,
+        "non_numeric": numeric_attempt.isna() & ~missing & ~blank,
+        "convertible": numeric_attempt.notna(),
+    }
+
+
+def print_total_charges_quality_check(df: pd.DataFrame) -> None:
+    """Report whether ``TotalCharges`` values are numerically interpretable.
+
+    Counts each category of value and shows contextual evidence for the
+    records that did not convert. It does not judge whether those records are
+    invalid, and it does not substitute a value for them.
+    """
+    issues = find_total_charges_issues(df)
+    affected = issues["missing"] | issues["blank"] | issues["non_numeric"]
+    affected_count = int(affected.sum())
+
+    print(f"{'Stored dtype:':<38}{df[TOTAL_CHARGES_COLUMN].dtype}")
+    print(f"{'Missing (pandas NA):':<38}{int(issues['missing'].sum())}")
+    print(f"{'Blank or whitespace-only:':<38}{int(issues['blank'].sum())}")
+    print(f"{'Non-blank, not numeric-convertible:':<38}{int(issues['non_numeric'].sum())}")
+    print(f"{'Numeric-convertible:':<38}{int(issues['convertible'].sum())}")
+
+    if affected_count == 0:
+        print()
+        print(f"Every {TOTAL_CHARGES_COLUMN} value is numerically interpretable.")
+        return
+
+    # --- tenure context for blank values ---
+    # Reported as an observed association only; a blank value is not treated
+    # as invalid, and no tenure value is treated as explaining it.
+    blank = issues["blank"]
+    if blank.any():
+        print()
+        print(f"tenure values where {TOTAL_CHARGES_COLUMN} is blank or whitespace-only:")
+        for tenure_value, count in df.loc[blank, "tenure"].value_counts().items():
+            print(f"  tenure = {tenure_value}: {count}")
+
+    print()
+    print(
+        f"Records with affected {TOTAL_CHARGES_COLUMN} values ({affected_count} total, "
+        f"showing up to {TOTAL_CHARGES_SAMPLE_SIZE}):"
+    )
+    sample = df.loc[affected, TOTAL_CHARGES_CONTEXT_COLUMNS].head(TOTAL_CHARGES_SAMPLE_SIZE)
+    print(sample.to_string(index=False))
+
+
 def main() -> None:
     """Load the dataset and print quality evidence for manual review."""
     # Load the dataset using the reusable module. The DataFrame is only read
@@ -275,6 +360,12 @@ def main() -> None:
     print("Semantic consistency checks")
     print("-" * 40)
     print_semantic_consistency_checks(customer_churn_df)
+
+    # --- TotalCharges numeric readability ---
+    print()
+    print(f"{TOTAL_CHARGES_COLUMN} numeric readability")
+    print("-" * 40)
+    print_total_charges_quality_check(customer_churn_df)
 
 
 if __name__ == "__main__":
