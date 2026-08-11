@@ -3,8 +3,9 @@
 This script loads the raw dataset through the reusable
 ``churner.data.load_dataset.load_dataset`` function and reports observations
 about its size, duplication, missing values, categorical value distributions,
-explicit semantic consistency rules, and the numeric readability of
-``TotalCharges``. It never modifies, cleans, or transforms the data, and it
+explicit semantic consistency rules, the numeric readability of
+``TotalCharges``, and the numerical quality of ``tenure``, ``SeniorCitizen``,
+and ``MonthlyCharges``. It never modifies, cleans, or transforms the data, and it
 draws no conclusion about whether the dataset is acceptable; it reports
 evidence only, for manual review.
 """
@@ -82,6 +83,45 @@ TOTAL_CHARGES_CONTEXT_COLUMNS = [
     "Churn",
 ]
 TOTAL_CHARGES_SAMPLE_SIZE = 10
+
+# --- Numerical quality: tenure ---
+# The data dictionary describes tenure as an integer count of months starting
+# at 0, so 0 is the documented lower bound. No upper bound is documented, and
+# none is invented here.
+TENURE_COLUMN = "tenure"
+TENURE_MINIMUM = 0
+TENURE_CONTEXT_COLUMNS = [
+    ID_COLUMN,
+    TENURE_COLUMN,
+    "MonthlyCharges",
+    TOTAL_CHARGES_COLUMN,
+    "Contract",
+    INTERNET_SERVICE_COLUMN,
+    "Churn",
+]
+
+# --- Numerical quality: SeniorCitizen ---
+# The data dictionary defines this as a category encoded as 0/1. The integer
+# storage is an encoding detail, so the expectation is set membership rather
+# than a numeric range.
+SENIOR_CITIZEN_COLUMN = "SeniorCitizen"
+SENIOR_CITIZEN_EXPECTED_VALUES = (0, 1)
+SENIOR_CITIZEN_CONTEXT_COLUMNS = [
+    ID_COLUMN,
+    SENIOR_CITIZEN_COLUMN,
+    TENURE_COLUMN,
+    "MonthlyCharges",
+    TOTAL_CHARGES_COLUMN,
+    "Churn",
+]
+
+# --- Numerical quality: MonthlyCharges ---
+# No business minimum or maximum is documented for this amount, so it is
+# profiled only; no threshold is defined and no value is called invalid.
+MONTHLY_CHARGES_COLUMN = "MonthlyCharges"
+
+# Number of affected records shown for the numerical checks below.
+NUMERICAL_SAMPLE_SIZE = 10
 
 
 def count_duplicate_rows(df: pd.DataFrame) -> int:
@@ -316,6 +356,157 @@ def print_total_charges_quality_check(df: pd.DataFrame) -> None:
     print(sample.to_string(index=False))
 
 
+def print_affected_records(df: pd.DataFrame, affected: pd.Series, context_columns: list[str]) -> None:
+    """Print contextual columns for the rows flagged by ``affected``.
+
+    Shows at most ``NUMERICAL_SAMPLE_SIZE`` rows so a reviewer can interpret
+    the flagged values by hand. The frame is only read from.
+    """
+    affected_count = int(affected.sum())
+    print()
+    print(
+        f"Affected records ({affected_count} total, "
+        f"showing up to {NUMERICAL_SAMPLE_SIZE}):"
+    )
+    sample = df.loc[affected, context_columns].head(NUMERICAL_SAMPLE_SIZE)
+    print(sample.to_string(index=False))
+
+
+def find_tenure_below_minimum(df: pd.DataFrame) -> pd.Series:
+    """Flag rows whose ``tenure`` falls below the documented minimum.
+
+    ``tenure`` counts months and the data dictionary describes it as starting
+    at 0, so values below ``TENURE_MINIMUM`` are unexpected. No maximum is
+    assumed, and the column is only read from.
+    """
+    return df[TENURE_COLUMN] < TENURE_MINIMUM
+
+
+def print_tenure_check(df: pd.DataFrame) -> None:
+    """Report ``tenure`` values below the documented minimum.
+
+    Reports the observed minimum, how many records fall below the expected
+    one, and the values involved. It does not correct, clip, or remove them.
+    """
+    below_minimum = find_tenure_below_minimum(df)
+    affected_count = int(below_minimum.sum())
+
+    print(f"Constrained check: {TENURE_COLUMN}")
+    print("Expectation:")
+    print(
+        f"  {TENURE_COLUMN} is an integer count of months with a documented "
+        f"minimum of {TENURE_MINIMUM}."
+    )
+    print("  No maximum is documented, so none is assumed here.")
+    print()
+    print(f"{'  Stored dtype:':<38}{df[TENURE_COLUMN].dtype}")
+    print(f"{'  Observed minimum:':<38}{df[TENURE_COLUMN].min()}")
+    print(f"{f'  Records with {TENURE_COLUMN} < {TENURE_MINIMUM}:':<38}{affected_count}")
+
+    if affected_count == 0:
+        print()
+        print(f"No {TENURE_COLUMN} values below {TENURE_MINIMUM} detected.")
+        return
+
+    print()
+    print(f"Unexpected {TENURE_COLUMN} values (require investigation):")
+    for observed_value, count in df.loc[below_minimum, TENURE_COLUMN].value_counts().items():
+        print(f"  Observed:      {observed_value}")
+        print(f"  Affected rows: {count}")
+
+    print_affected_records(df, below_minimum, TENURE_CONTEXT_COLUMNS)
+
+
+def find_unexpected_senior_citizen_values(df: pd.DataFrame) -> pd.Series:
+    """Flag rows whose ``SeniorCitizen`` value is outside the encoded domain.
+
+    The data dictionary defines the column as a category encoded as 0/1, so
+    membership in ``SENIOR_CITIZEN_EXPECTED_VALUES`` is the expectation rather
+    than a numeric range. Missing values fall outside the domain and are
+    flagged too. The column is only read from.
+    """
+    return ~df[SENIOR_CITIZEN_COLUMN].isin(SENIOR_CITIZEN_EXPECTED_VALUES)
+
+
+def print_senior_citizen_check(df: pd.DataFrame) -> None:
+    """Report ``SeniorCitizen`` values outside the documented 0/1 encoding.
+
+    Lists every observed value with its count and shows contextual evidence
+    for any value outside the domain. It does not re-encode or drop them.
+    """
+    unexpected = find_unexpected_senior_citizen_values(df)
+    affected_count = int(unexpected.sum())
+    expected_values = ", ".join(str(value) for value in SENIOR_CITIZEN_EXPECTED_VALUES)
+
+    print(f"Constrained check: {SENIOR_CITIZEN_COLUMN}")
+    print("Expectation:")
+    print(
+        f"  {SENIOR_CITIZEN_COLUMN} is documented as a category encoded as "
+        f"{expected_values},"
+    )
+    print("  so it is checked against that domain rather than a numeric range.")
+    print()
+    print(f"{'  Stored dtype:':<38}{df[SENIOR_CITIZEN_COLUMN].dtype}")
+    print(f"{'  Expected domain:':<38}{{{expected_values}}}")
+    print(f"{'  Records outside the domain:':<38}{affected_count}")
+
+    print()
+    print("Observed values:")
+    observed_counts = df[SENIOR_CITIZEN_COLUMN].value_counts(dropna=False)
+    for observed_value, count in observed_counts.items():
+        print(f"  {observed_value}: {count}")
+
+    if affected_count == 0:
+        print()
+        print(
+            f"No {SENIOR_CITIZEN_COLUMN} values outside {{{expected_values}}} detected."
+        )
+        return
+
+    print()
+    print(f"Unexpected {SENIOR_CITIZEN_COLUMN} values (require investigation):")
+    unexpected_counts = df.loc[unexpected, SENIOR_CITIZEN_COLUMN].value_counts(dropna=False)
+    for observed_value, count in unexpected_counts.items():
+        print(f"  Observed:      {observed_value}")
+        print(f"  Affected rows: {count}")
+
+    print_affected_records(df, unexpected, SENIOR_CITIZEN_CONTEXT_COLUMNS)
+
+
+def print_monthly_charges_profile(df: pd.DataFrame) -> None:
+    """Describe the observed shape of ``MonthlyCharges`` without judging it.
+
+    No business minimum or maximum is documented for this amount, so there is
+    nothing to compare the data against. The observed range is reported as
+    context only; no value is classified as valid or invalid.
+    """
+    monthly_charges = df[MONTHLY_CHARGES_COLUMN]
+
+    print(f"Observational profile: {MONTHLY_CHARGES_COLUMN}")
+    print("Expectation:")
+    print("  No business minimum or maximum is documented for this amount,")
+    print("  so no validity range is defined and no value is flagged.")
+    print()
+    print(f"{'  Stored dtype:':<38}{monthly_charges.dtype}")
+    print(f"{'  Missing (pandas NA):':<38}{int(monthly_charges.isna().sum())}")
+    print(f"{'  Observed minimum:':<38}{monthly_charges.min()}")
+    print(f"{'  Observed maximum:':<38}{monthly_charges.max()}")
+
+
+def print_numerical_quality_checks(df: pd.DataFrame) -> None:
+    """Print each numerical check in its own block.
+
+    The constrained checks compare the data against an expectation documented
+    in the data dictionary; the observational profile has no such expectation
+    to compare against and therefore flags nothing.
+    """
+    print_tenure_check(df)
+    print()
+    print_senior_citizen_check(df)
+    print()
+    print_monthly_charges_profile(df)
+
+
 def main() -> None:
     """Load the dataset and print quality evidence for manual review."""
     # Load the dataset using the reusable module. The DataFrame is only read
@@ -366,6 +557,12 @@ def main() -> None:
     print(f"{TOTAL_CHARGES_COLUMN} numeric readability")
     print("-" * 40)
     print_total_charges_quality_check(customer_churn_df)
+
+    # --- Numerical quality checks ---
+    print()
+    print("Numerical quality checks")
+    print("-" * 40)
+    print_numerical_quality_checks(customer_churn_df)
 
 
 if __name__ == "__main__":

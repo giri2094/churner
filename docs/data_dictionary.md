@@ -107,3 +107,153 @@ the `tenure × MonthlyCharges` relationship.
 
 Transformation of `TotalCharges` will be addressed later during the
 preprocessing stage.
+
+---
+
+## Data Quality Investigation — Categorical Domains and Numerical Quality
+
+### Categorical Domain Investigation
+
+The categorical value profile produced by the data-quality assessment was
+compared against the expected categorical domains documented in the table
+above. For each column, every observed value was checked against the set of
+values this dictionary declares for it.
+
+The investigated categorical columns were:
+
+- `gender`
+- `Partner`
+- `Dependents`
+- `PhoneService`
+- `MultipleLines`
+- `InternetService`
+- `OnlineSecurity`
+- `OnlineBackup`
+- `DeviceProtection`
+- `TechSupport`
+- `StreamingTV`
+- `StreamingMovies`
+- `Contract`
+- `PaperlessBilling`
+- `PaymentMethod`
+- `Churn`
+
+The observed categorical values matched the documented expected domains for
+all investigated columns.
+
+Result:
+
+- Unexpected categorical domain values: `0`
+
+### Categorical Domains — Engineering Interpretation
+
+The investigation did not introduce automatic normalization or correction of
+categorical values. The reasoning is:
+
+- The quality checker should report unexpected observations rather than
+  silently normalize them. Normalization inside the assessment step would hide
+  the very evidence the step exists to surface.
+- An unexpected representation does not automatically prove that the
+  underlying record is invalid. It establishes that a value departs from a
+  documented expectation, which is a prompt for investigation rather than a
+  verdict.
+- The current `data_dictionary.md` provides the human-readable semantic
+  expectations that the comparison is made against.
+- A separate machine-readable data contract was considered but deliberately
+  not introduced during Day 9, because the current project does not yet
+  demonstrate a sufficient requirement for that additional abstraction.
+- The existing categorical profile remains useful for observing actual value
+  distributions, independently of whether any value is unexpected.
+
+### Numerical Quality Investigation
+
+Numerical and numerically encoded fields were investigated using the same
+evidence-first philosophy applied during the `TotalCharges` investigation:
+
+```text
+Detection
+    ↓
+Context
+    ↓
+Evidence
+    ↓
+Engineering decision
+```
+
+The quality checker reports evidence. It does not modify the raw dataset.
+
+#### `tenure`
+
+- Semantic meaning: integer count of months.
+- Documented minimum: `0`.
+- No maximum was defined, because the data dictionary does not provide a
+  defensible maximum.
+- Observed minimum: `0`.
+- Records with `tenure < 0`: `0`.
+
+Engineering interpretation:
+
+> The investigated lower-bound constraint for `tenure` showed no violations.
+
+This statement is bounded to the lower-bound constraint that was actually
+checked. It does not establish that every `tenure` value is correct.
+
+#### `SeniorCitizen`
+
+- Stored dtype: `int64`.
+- Semantic type: categorical, encoded as `0`/`1`.
+- Expected domain: `{0, 1}`.
+- Observed values:
+  - `0`: `5901`
+  - `1`: `1142`
+- Records outside the expected domain: `0`.
+
+This reinforces the distinction between raw representation and semantic type:
+
+> Although pandas stores `SeniorCitizen` as an integer, it is interpreted as a
+> categorical domain rather than a continuous numerical measurement.
+
+The field is therefore checked for membership in `{0, 1}` rather than against a
+numerical range, since a range check would accept values that are meaningless
+for an encoded flag.
+
+#### `MonthlyCharges`
+
+- Stored dtype: `float64`.
+- pandas missing values: `0`.
+- Observed minimum: `18.25`.
+- Observed maximum: `118.75`.
+
+Engineering decision:
+
+> No business minimum or maximum was defined, because the data dictionary does
+> not currently provide a defensible validity range.
+
+Therefore:
+
+- The observed range is reported as evidence.
+- No value was classified as invalid.
+- No arbitrary threshold was introduced.
+
+### Overall Day 9 Engineering Decision
+
+> The investigated constraints showed no violations.
+
+This statement is intentionally bounded to the checks that were actually
+performed. It does not mean:
+
+> "The dataset is proven clean."
+
+Only the documented expectations described above were compared against the
+data. Fields, relationships, and failure modes that were not investigated
+remain unexamined rather than confirmed correct.
+
+During this investigation:
+
+- no raw records were modified
+- no values were automatically corrected
+- no records were deleted
+- no preprocessing was introduced
+- no arbitrary numerical thresholds were invented
+
+The quality assessment remains non-destructive and evidence-oriented.
