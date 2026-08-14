@@ -132,3 +132,4 @@ The objective will be to identify meaningful patterns and formulate hypotheses a
 
 Those hypotheses will remain hypotheses until supported by further analysis.
 Next Investigation
+Next Investigation 1
