@@ -5,20 +5,29 @@ findings as a PDF report under ``reports``. It is deliberately separate from
 ``assess_data_quality.py``: that script asks whether the observed data conforms
 to documented expectations, while this one investigates the data itself.
 
-Investigation 1 — retention vs. churn baseline — is the only analysis
-implemented so far. It measures how the target variable is distributed across
-retained and churned customers, renders that distribution as a chart and a
-table, and writes a strictly data-derived interpretation. Every figure in the
-report is computed from the loaded dataset; none is written by hand.
+Investigation 1 — retention vs. churn baseline — measures how the target
+variable is distributed across retained and churned customers, renders that
+distribution as a chart and a table, and writes a strictly data-derived
+interpretation.
 
-The raw dataset is only read from. Nothing here cleans, imputes, encodes, or
-otherwise modifies it.
+Investigation 2 — tenure vs. churn — compares the tenure distributions of the
+two churn populations as a histogram and a box plot. Both are drawn from the
+raw tenure observations rather than from any summary of them, because a summary
+holds no individual observation to plot. The 6-month bars of the histogram are
+a device for displaying a continuous variable; they are not analytical tenure
+bands, and no churn rate is computed per bar.
+
+Every figure in the report is computed from the loaded dataset; none is written
+by hand. The raw dataset is only read from. Nothing here cleans, imputes,
+encodes, or otherwise modifies it.
 """
 
 # --- Standard library imports ---
+import math
 import sys
 import textwrap
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 # --- Third-party imports ---
@@ -66,6 +75,18 @@ CHURNED_VALUE = "Yes"
 RETAINED_LABEL = "Retained"
 CHURNED_LABEL = "Churned"
 MISSING_LABEL = "Missing target value"
+
+# --- Tenure variable ---
+# The data dictionary documents ``tenure`` as the number of months the customer
+# has stayed with the company.
+TENURE_COLUMN = "tenure"
+
+# Width of the histogram bars, in months. Six months groups the observed range
+# finely enough to show where observations concentrate while keeping each bar
+# supported by enough customers to be readable. It is a display choice about
+# this chart alone: no analytical tenure band is defined anywhere in this
+# report, and no rate is computed per bar.
+TENURE_BIN_WIDTH_MONTHS = 6
 
 # --- Report layout ---
 # A4 portrait in inches, so the pages print without rescaling.
@@ -246,8 +267,11 @@ def build_overview_lines(summary: RetentionSummary) -> list[str]:
         f"{'Total records:':<22}{format_count(summary.total_customers)}",
         f"{'Target variable:':<22}{TARGET_COLUMN}",
         f"{'Analysis scope:':<22}Investigation 1 — retention vs. churn baseline",
-        f"{'':<22}Distribution of the target variable only.",
-        f"{'':<22}No other variable is examined in this report.",
+        f"{'':<22}Distribution of the target variable.",
+        f"{'':<22}Investigation 2 — tenure vs. churn",
+        f"{'':<22}Tenure distributions of the two churn",
+        f"{'':<22}populations, described only. No other",
+        f"{'':<22}variable is examined in this report.",
         f"{'Data treatment:':<22}Read-only. The raw dataset is not modified,",
         f"{'':<22}cleaned, or transformed by this analysis.",
     ]
@@ -430,32 +454,271 @@ def build_interpretation_paragraphs(summary: RetentionSummary) -> list[str]:
 
 
 def create_interpretation_page(summary: RetentionSummary) -> Figure:
-    """Render Section 3 — Interpretation."""
+    """Render Section 3 — Interpretation of the retention vs. churn baseline."""
     figure = create_page_figure()
 
-    top = draw_heading(figure, "3. Interpretation", 1 - PAGE_MARGIN)
+    top = draw_heading(figure, "3. Interpretation — Retention vs. Churn", 1 - PAGE_MARGIN)
     draw_body_text(figure, wrap_paragraphs(build_interpretation_paragraphs(summary)), top)
 
     return figure
 
 
-def write_report(summary: RetentionSummary, output_path: Path) -> None:
+@dataclass(frozen=True)
+class TenureObservations:
+    """The raw tenure observations of each churn population.
+
+    Both the histogram and the box plot are drawn from this one object, so the
+    two views cannot end up describing different data. The series hold the
+    individual observations rather than a summary of them: a distribution
+    cannot be reconstructed from means and quartiles.
+
+    Customers whose tenure is missing are absent from these series, because a
+    missing number has no position on an axis. They are excluded from the plot
+    alone; nothing is imputed, and the loaded dataset keeps them. A customer
+    whose target value is missing appears in neither population.
+    """
+
+    retained: pd.Series
+    churned: pd.Series
+
+    @property
+    def combined(self) -> pd.Series:
+        """Both populations' observations, for measuring their shared scale."""
+        return pd.concat([self.retained, self.churned])
+
+    @property
+    def observed_range(self) -> tuple[float, float]:
+        """Lowest and highest tenure observed across both populations.
+
+        Read from the data rather than assumed, so the charts describe the
+        range the dataset actually holds instead of one hardcoded here.
+        """
+        combined = self.combined
+        return float(combined.min()), float(combined.max())
+
+
+def collect_tenure_observations(df: pd.DataFrame) -> TenureObservations:
+    """Split the tenure observations into the two churn populations.
+
+    Selecting with a mask and dropping missing values both return new series,
+    so the loaded frame is read from and never written back to.
+    """
+    tenure_values = df[TENURE_COLUMN]
+    target_values = df[TARGET_COLUMN]
+
+    return TenureObservations(
+        retained=tenure_values[target_values == RETAINED_VALUE].dropna(),
+        churned=tenure_values[target_values == CHURNED_VALUE].dropna(),
+    )
+
+
+def build_tenure_bin_edges(observations: TenureObservations) -> list[float]:
+    """Build one set of histogram bin edges covering both populations.
+
+    The edges are computed once from the combined observations and used for
+    both populations, so the bars line up and the two distributions can be
+    compared bar for bar. Edges start at a whole multiple of the bar width at
+    or below the lowest observation and continue past the highest, so every
+    observation falls inside a bar.
+    """
+    lowest, highest = observations.observed_range
+
+    # No observation to cover: return a single empty bar of the usual width,
+    # so the page still renders rather than failing on an undefined range.
+    if math.isnan(lowest):
+        return [0.0, float(TENURE_BIN_WIDTH_MONTHS)]
+
+    first_edge = math.floor(lowest / TENURE_BIN_WIDTH_MONTHS) * TENURE_BIN_WIDTH_MONTHS
+    edges = [float(first_edge)]
+    while edges[-1] < highest or len(edges) < 2:
+        edges.append(edges[-1] + TENURE_BIN_WIDTH_MONTHS)
+
+    return edges
+
+
+def build_tenure_populations(
+    observations: TenureObservations,
+) -> list[tuple[str, pd.Series, str]]:
+    """List each churn population with its observations and chart colour.
+
+    Both charts iterate this list, which keeps their colours, their labels, and
+    the order they read in consistent with each other and with the retention
+    chart in Section 2.
+    """
+    return [
+        (RETAINED_LABEL, observations.retained, RETAINED_COLOR),
+        (CHURNED_LABEL, observations.churned, CHURNED_COLOR),
+    ]
+
+
+def draw_tenure_histogram(
+    axes: plt.Axes, observations: TenureObservations, bin_edges: list[float]
+) -> None:
+    """Draw both populations' tenure distributions as one overlaid histogram.
+
+    The bars are semi-transparent and share one set of edges, so the region
+    where the two distributions overlap stays visible instead of one hiding the
+    other. Counts, rather than proportions, are plotted: the populations differ
+    in size, and the chart reports what was observed rather than rescaling it.
+
+    Each population's size is stated in the legend, since a taller bar in the
+    larger population does not by itself mean a larger share of it.
+    """
+    for label, tenure_values, color in build_tenure_populations(observations):
+        axes.hist(
+            tenure_values,
+            bins=bin_edges,
+            label=f"{label} (n = {format_count(len(tenure_values))})",
+            color=color,
+            alpha=0.55,
+            edgecolor=color,
+            linewidth=1.1,
+        )
+
+    axes.set_title("Customers by tenure, in 6-month display bins", fontsize=13, pad=14)
+    axes.set_xlabel("Tenure (months)")
+    axes.set_ylabel("Customer count")
+
+    # Tick every bar edge, so a bar can be read back to the months it covers.
+    axes.set_xticks(bin_edges)
+    axes.set_xlim(bin_edges[0], bin_edges[-1])
+    axes.legend(frameon=False, fontsize=10)
+
+    axes.spines["top"].set_visible(False)
+    axes.spines["right"].set_visible(False)
+    axes.grid(axis="y", linestyle=":", alpha=0.4)
+    axes.set_axisbelow(True)
+
+
+def draw_tenure_box_plot(axes: plt.Axes, observations: TenureObservations) -> None:
+    """Draw both populations' tenure as box plots on one shared axis.
+
+    Sharing the axis is the point of the chart: the medians, the quartiles, and
+    the spread of the two populations are read against the same scale. Points
+    beyond the whiskers are kept, since an exploratory chart should show the
+    observations that sit apart from the bulk rather than trim them away.
+    """
+    populations = build_tenure_populations(observations)
+
+    box_plot = axes.boxplot(
+        [tenure_values for _, tenure_values, _ in populations],
+        orientation="horizontal",
+        tick_labels=[label for label, _, _ in populations],
+        patch_artist=True,
+        widths=0.45,
+        medianprops={"color": "#222222", "linewidth": 1.6},
+        flierprops={
+            "marker": "o",
+            "markersize": 3.5,
+            "markerfacecolor": "none",
+            "markeredgecolor": "#555555",
+            "alpha": 0.5,
+        },
+    )
+
+    for box, (_, _, color) in zip(box_plot["boxes"], populations):
+        box.set_facecolor(color)
+        box.set_alpha(0.55)
+        box.set_edgecolor(color)
+
+    lowest, highest = observations.observed_range
+    axes.set_title("Median, quartiles, and spread of tenure", fontsize=13, pad=14)
+    axes.set_xlabel("Tenure (months)")
+    axes.set_xlim(lowest - 2, highest + 2)
+
+    # Read top to bottom in the same order as the histogram legend.
+    axes.invert_yaxis()
+
+    axes.spines["top"].set_visible(False)
+    axes.spines["right"].set_visible(False)
+    axes.grid(axis="x", linestyle=":", alpha=0.4)
+    axes.set_axisbelow(True)
+
+
+def draw_chart_caption(figure: Figure, text: str, top: float) -> None:
+    """Draw the italic note that sits under a section heading."""
+    figure.text(
+        PAGE_MARGIN,
+        top,
+        text,
+        fontsize=BODY_FONT_SIZE,
+        va="top",
+        style="italic",
+        color="#555555",
+    )
+
+
+def create_tenure_histogram_page(observations: TenureObservations) -> Figure:
+    """Render Section 4 — Tenure Distribution by Churn Status."""
+    figure = create_page_figure()
+
+    top = draw_heading(figure, "4. Tenure Distribution by Churn Status", 1 - PAGE_MARGIN)
+    draw_chart_caption(
+        figure,
+        textwrap.fill(
+            "Every recorded tenure observation is plotted. The 6-month bars display the "
+            "continuous distribution; they are not analytical tenure bands, and no churn "
+            "rate is computed for them.",
+            width=88,
+        ),
+        top,
+    )
+
+    # Top edge kept level with the box plot in Section 5, so the two views of
+    # the same observations sit in the same place from page to page.
+    chart_axes = figure.add_axes((0.12, 0.24, 0.80, 0.52))
+    draw_tenure_histogram(chart_axes, observations, build_tenure_bin_edges(observations))
+
+    return figure
+
+
+def create_tenure_box_plot_page(observations: TenureObservations) -> Figure:
+    """Render Section 5 — Tenure Distribution by Churn Status, as a box plot."""
+    figure = create_page_figure()
+
+    top = draw_heading(
+        figure, "5. Tenure Distribution by Churn Status — Box Plot", 1 - PAGE_MARGIN
+    )
+    draw_chart_caption(
+        figure,
+        textwrap.fill(
+            "Drawn from the same tenure observations as Section 4. Boxes span the "
+            "interquartile range, the line inside each box is the median, and points "
+            "beyond the whiskers are shown rather than removed.",
+            width=88,
+        ),
+        top,
+    )
+
+    chart_axes = figure.add_axes((0.14, 0.46, 0.78, 0.30))
+    draw_tenure_box_plot(chart_axes, observations)
+
+    return figure
+
+
+def write_report(
+    summary: RetentionSummary,
+    tenure_observations: TenureObservations,
+    output_path: Path,
+) -> None:
     """Write the report pages to ``output_path`` as a single PDF.
 
-    Each figure is closed after it is written so repeated runs do not
-    accumulate open figures.
+    Each page is built only when it is about to be written, and its figure is
+    closed afterwards, so repeated runs do not accumulate open figures.
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     page_builders = (
-        create_title_and_overview_page,
-        create_retention_page,
-        create_interpretation_page,
+        partial(create_title_and_overview_page, summary),
+        partial(create_retention_page, summary),
+        partial(create_interpretation_page, summary),
+        partial(create_tenure_histogram_page, tenure_observations),
+        partial(create_tenure_box_plot_page, tenure_observations),
     )
 
     with PdfPages(output_path) as pdf:
         for build_page in page_builders:
-            figure = build_page(summary)
+            figure = build_page()
             pdf.savefig(figure)
             plt.close(figure)
 
@@ -477,8 +740,25 @@ def print_console_summary(summary: RetentionSummary) -> None:
         )
 
 
+def print_tenure_console_summary(observations: TenureObservations) -> None:
+    """Print how many observations each tenure chart was drawn from.
+
+    Reporting the counts and the observed range at run time makes it visible
+    which data reached the charts, including how many customers were left out
+    of them for holding no tenure value.
+    """
+    print()
+    print("Tenure observations plotted, by churn status")
+    print("-" * 44)
+    for label, tenure_values, _ in build_tenure_populations(observations):
+        print(f"{label + ':':<24}{format_count(len(tenure_values)):>8} observations")
+
+    lowest, highest = observations.observed_range
+    print(f"{'Observed range:':<24}{lowest:>8.0f} to {highest:.0f} months")
+
+
 def main() -> None:
-    """Run investigation 1 and write the EDA report."""
+    """Run investigations 1 and 2, then write the EDA report."""
     if not DATASET_PATH.exists():
         raise SystemExit(f"Dataset not found: {DATASET_PATH}")
 
@@ -486,17 +766,24 @@ def main() -> None:
     # from; no operation below writes back to it.
     customer_churn_df = load_dataset(str(DATASET_PATH))
 
-    if TARGET_COLUMN not in customer_churn_df.columns:
+    missing_columns = [
+        column_name
+        for column_name in (TARGET_COLUMN, TENURE_COLUMN)
+        if column_name not in customer_churn_df.columns
+    ]
+    if missing_columns:
         raise SystemExit(
-            f"Target column '{TARGET_COLUMN}' not found in {DATASET_PATH.name}. "
+            f"Required column(s) {missing_columns} not found in {DATASET_PATH.name}. "
             f"Columns present: {list(customer_churn_df.columns)}"
         )
 
     summary = summarize_retention(customer_churn_df)
+    tenure_observations = collect_tenure_observations(customer_churn_df)
 
     print_console_summary(summary)
+    print_tenure_console_summary(tenure_observations)
 
-    write_report(summary, REPORT_PATH)
+    write_report(summary, tenure_observations, REPORT_PATH)
 
     print()
     print(f"Report written to: {REPORT_PATH.relative_to(PROJECT_ROOT).as_posix()}")
