@@ -131,3 +131,4 @@ The next EDA investigation will examine customer attributes against the establis
 The objective will be to identify meaningful patterns and formulate hypotheses about which customer characteristics are associated with higher or lower observed churn.
 
 Those hypotheses will remain hypotheses until supported by further analysis.
+add one more info
