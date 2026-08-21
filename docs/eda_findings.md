@@ -362,3 +362,4 @@ The tenure investigation is **complete**. Its results are recorded above, and `t
 The next EDA investigation will examine a further customer attribute against the established **26.54% overall churn baseline**, following the same pattern used here: describe the attribute's relationship to observed churn, compare segment-level churn rates against the baseline, and record what the result does and does not establish.
 
 No specific attribute or expected result is committed to in advance. Any pattern found will be treated as an observed association and will remain a hypothesis until supported by further analysis.
+No
