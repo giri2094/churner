@@ -1,38 +1,62 @@
-"""Comparison of already-evaluated Telco churn classification models.
+"""Comparison of already-measured Telco churn classification models.
 
-This module is the comparison step that sits after evaluation: it gathers
-named ``EvaluationResult`` values and returns them as one frozen record.
-The results are stored as they were handed over, so any ranking or
-selection remains the caller's.
+This module is the comparison step that sits after evaluation and cost
+calculation: it gathers the evidence collected for each named model and
+returns it as one frozen record. The evidence is stored as it was handed
+over, so any ranking or selection remains the caller's.
 
 There is one comparison object rather than a ranked table, because this
-layer does not decide which metric matters or which model won.
+layer does not decide which metric matters or which model won. That
+decision belongs to ``select``, which applies an explicit policy to the
+evidence gathered here.
 
-Nothing here trains a model, scores a pipeline, or computes a difference
-between metrics. The evaluations are only collected.
+A model's identity lives only in the mapping key. Nothing about a model
+is recorded twice: the technical metrics stay in ``EvaluationResult``,
+the business cost stays in ``CostResult``, and the name stays in the key
+that reaches both.
+
+Nothing here trains a model, scores a pipeline, calculates a cost, or
+computes a difference between metrics. The evidence is only collected.
 """
 
 from dataclasses import dataclass
 
+from churner.evaluation.cost import CostResult
 from churner.evaluation.evaluate import EvaluationResult
 
 
 @dataclass(frozen=True)
-class ModelComparison:
-    """Named evaluation results of one or more fitted models.
+class ModelEvidence:
+    """Everything measured about one model, gathered for comparison.
 
-    Each key is the caller-supplied name of a model; each value is the
-    ``EvaluationResult`` already computed for that model. Rankings,
-    metric differences, and a winning model are not stored here.
+    The two halves answer different questions and are kept as the objects
+    that produced them: ``evaluation`` describes how well the model
+    discriminates, and ``cost`` describes what its mistakes are worth
+    under the business assumptions in force. Neither half's fields are
+    restated here, and neither is the model's name: the name is the key
+    this evidence is stored under.
     """
 
-    evaluations: dict[str, EvaluationResult]
+    evaluation: EvaluationResult
+    cost: CostResult
+
+
+@dataclass(frozen=True)
+class ModelComparison:
+    """Named evidence for one or more measured models.
+
+    Each key is the caller-supplied identifier of a model; each value is
+    the ``ModelEvidence`` already gathered for it. Rankings, metric
+    differences, and a winning model are not stored here.
+    """
+
+    candidates: dict[str, ModelEvidence]
 
 
 def compare_models(
-    evaluations: dict[str, EvaluationResult],
+    candidates: dict[str, ModelEvidence],
 ) -> ModelComparison:
-    """Collect named evaluation results into one comparison record.
+    """Collect named model evidence into one comparison record.
 
     The mapping is copied so later changes to the caller's dictionary do
     not alter the comparison, and the copy keeps the original insertion
@@ -41,25 +65,27 @@ def compare_models(
 
     Parameters
     ----------
-    evaluations : dict[str, EvaluationResult]
-        Named results, ordinarily from ``evaluate_model``. Only read
-        from. At least one entry is required.
+    candidates : dict[str, ModelEvidence]
+        Model identifiers mapped to the evidence gathered for each, the
+        evaluation ordinarily from ``evaluate_model`` and the cost from
+        ``calculate_business_cost``. Only read from. At least one entry
+        is required.
 
     Returns
     -------
     ModelComparison
-        The supplied evaluations, stored under the names and in the
+        The supplied evidence, stored under the identifiers and in the
         order they were given.
 
     Raises
     ------
     ValueError
-        If ``evaluations`` is empty.
+        If ``candidates`` is empty.
     """
-    if not evaluations:
+    if not candidates:
         raise ValueError(
-            "evaluations must contain at least one EvaluationResult; "
+            "candidates must contain at least one ModelEvidence; "
             "got an empty dictionary."
         )
 
-    return ModelComparison(evaluations=dict(evaluations))
+    return ModelComparison(candidates=dict(candidates))
