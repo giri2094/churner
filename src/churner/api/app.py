@@ -21,22 +21,92 @@ costume of a runtime one. The error is raised during startup, naming the
 path it tried and the variable that sets it, so the server stops with the
 reason visible.
 
-Nothing here predicts, validates a request, shapes a response, or declares
-a route. The service this module stores is the whole of what routes get,
-and they reach it through the dependency rather than through this module.
+The one route the application declares is assembly of the same kind. It
+names the customer from its path, has the validated features turned into a
+frame by ``features_to_dataframe``, asks the injected service for one
+answer, and reports it. Each of those steps belongs to a module that
+already owns it, so the route itself holds no model, no frame building, and
+no scoring, and there is nothing in it to go wrong independently of the
+stages it calls.
+
+The customer is read from the path rather than from the body, because the
+address of the request already names which customer is being predicted
+about; the body describes a customer without saying which one.
+
+The service arrives through ``get_prediction_service`` even though this
+module is what put it in ``app.state``. A handler reading that state
+directly would be tied to how startup happens to store the service, and
+would bypass the dependency override that lets a test, or another
+application, supply a service of its own.
+
+Nothing here predicts, preprocesses, or loads a model while serving a
+request: the route reads what the dependency hands it, and the figures it
+reports are the ones the service produced.
 """
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Annotated
 
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 
+from churner.api.adapters import features_to_dataframe
+from churner.api.dependencies import get_prediction_service
+from churner.api.schemas import PredictionRequest, PredictionResponse
 from churner.config.settings import MODEL_PATH_VARIABLE, Settings, load_settings
 from churner.packaging.model import load_model
 from churner.serving.prediction import PredictionService
 
 APPLICATION_TITLE = "Churner"
 APPLICATION_DESCRIPTION = "Customer churn prediction service."
+
+# --- The address a prediction is asked for at ---
+# The customer is part of the path, so the request says which customer it
+# is about before its body is read.
+PREDICTION_PATH = "/customers/{customer_id}/prediction"
+
+router = APIRouter()
+
+
+@router.post(PREDICTION_PATH, response_model=PredictionResponse)
+def predict_customer_churn(
+    customer_id: str,
+    request: PredictionRequest,
+    prediction_service: Annotated[PredictionService, Depends(get_prediction_service)],
+) -> PredictionResponse:
+    """Answer one prediction request about the customer the path names.
+
+    The features are asked about as a single row, so the service returns a
+    single result, and that result is the answer: the class, the
+    probability, and the version are reported as it produced them rather
+    than recomputed or reinterpreted here.
+
+    Parameters
+    ----------
+    customer_id : str
+        The customer the request is about, taken from the path. It is what
+        the result is attributed to, and it is not read from the body.
+    request : PredictionRequest
+        The validated body, holding the customer's model features.
+    prediction_service : PredictionService
+        The application's service, supplied by the dependency rather than
+        built here, so one model answers every request.
+
+    Returns
+    -------
+    PredictionResponse
+        The identifier, predicted class, probability of churn, and model
+        version of the single result the service returned.
+    """
+    features = features_to_dataframe(request.features)
+    result = prediction_service.predict([customer_id], features)[0]
+
+    return PredictionResponse(
+        customer_id=result.customer_id,
+        churn_prediction=result.churn_prediction,
+        churn_probability=result.churn_probability,
+        model_version=result.model_version,
+    )
 
 
 def build_prediction_service(settings: Settings) -> PredictionService:
@@ -90,8 +160,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     Returns
     -------
     FastAPI
-        An application whose startup puts one ``PredictionService`` in
-        ``app.state.prediction_service``.
+        An application serving the prediction route, whose startup puts one
+        ``PredictionService`` in ``app.state.prediction_service``.
     """
     application_settings = settings if settings is not None else load_settings()
 
@@ -108,11 +178,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # connection, no file handle, no thread -- so there is nothing to
         # release, and this is where a resource that did would be released.
 
-    return FastAPI(
+    application = FastAPI(
         title=APPLICATION_TITLE,
         description=APPLICATION_DESCRIPTION,
         lifespan=lifespan,
     )
+    application.include_router(router)
+
+    return application
 
 
 app = create_app()
