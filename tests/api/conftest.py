@@ -15,7 +15,9 @@ checkout is guaranteed to contain.
 from pathlib import Path
 
 import numpy as np
+
 import pytest
+from fastapi.testclient import TestClient
 
 from churner.api import app as app_module
 from churner.config.settings import Settings
@@ -94,3 +96,12 @@ def failing_loader(monkeypatch) -> RecordingLoader:
     )
     monkeypatch.setattr(app_module, "load_model", recorder)
     return recorder
+
+
+@pytest.fixture
+def client(settings, loader) -> TestClient:
+    """Create a test client whose application loads the stand-in model."""
+    application = app_module.create_app(settings)
+
+    with TestClient(application) as test_client:
+        yield test_client

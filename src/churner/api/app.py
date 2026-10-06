@@ -48,11 +48,15 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from churner.api.adapters import features_to_dataframe
-from churner.api.dependencies import get_prediction_service
-from churner.api.schemas import PredictionRequest, PredictionResponse
+from churner.api.dependencies import (
+    PredictionServiceUnavailableError,
+    get_prediction_service,
+)
+from churner.api.schemas import HealthResponse, PredictionRequest, PredictionResponse
 from churner.config.settings import MODEL_PATH_VARIABLE, Settings, load_settings
 from churner.packaging.model import load_model
 from churner.serving.prediction import PredictionService
@@ -66,6 +70,35 @@ APPLICATION_DESCRIPTION = "Customer churn prediction service."
 PREDICTION_PATH = "/customers/{customer_id}/prediction"
 
 router = APIRouter()
+
+
+@router.get("/health/liveness", response_model=HealthResponse)
+def liveness() -> HealthResponse:
+    """Report that the application process is alive."""
+    return HealthResponse(status="alive")
+
+async def prediction_service_unavailable_handler(
+    request: Request,
+    exc: PredictionServiceUnavailableError,
+) -> JSONResponse:
+    """Translate an unavailable prediction service into HTTP 503."""
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Prediction service unavailable"},
+    )
+
+
+
+
+@router.get("/health/readiness", response_model=HealthResponse)
+def readiness(
+    prediction_service: Annotated[
+        PredictionService,
+        Depends(get_prediction_service),
+    ],
+) -> HealthResponse:
+    """Report that the prediction-serving dependency is available."""
+    return HealthResponse(status="ready")
 
 
 @router.post(PREDICTION_PATH, response_model=PredictionResponse)
@@ -178,10 +211,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # connection, no file handle, no thread -- so there is nothing to
         # release, and this is where a resource that did would be released.
 
+
     application = FastAPI(
         title=APPLICATION_TITLE,
         description=APPLICATION_DESCRIPTION,
         lifespan=lifespan,
+    )
+
+    application.add_exception_handler(
+        PredictionServiceUnavailableError,
+        prediction_service_unavailable_handler,
     )
     application.include_router(router)
 

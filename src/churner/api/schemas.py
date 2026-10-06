@@ -56,6 +56,7 @@ customer and says nothing about which one; the response names the customer
 because an answer has to be attributable once it is away from the request
 that asked for it.
 """
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -148,3 +149,10 @@ class PredictionResponse(BaseModel):
     churn_prediction: str
     churn_probability: float
     model_version: str
+
+
+
+class HealthResponse(BaseModel):
+    """The operational status reported by a health endpoint."""
+
+    status: Literal["alive", "ready"]

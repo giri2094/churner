@@ -14,10 +14,13 @@ without this module knowing either exists.
 Nothing here predicts, loads a model, reads configuration, or decides what
 a caller may ask for.
 """
-
 from fastapi import Request
 
 from churner.serving.prediction import PredictionService
+
+
+class PredictionServiceUnavailableError(RuntimeError):
+    """The application has no prediction service available."""
 
 
 def get_prediction_service(request: Request) -> PredictionService:
@@ -39,7 +42,7 @@ def get_prediction_service(request: Request) -> PredictionService:
 
     Raises
     ------
-    RuntimeError
+    PredictionServiceUnavailableError
         If application state holds no service. Startup always puts one
         there, so this means the application is being used without its
         lifespan having run rather than that a model is missing.
@@ -47,7 +50,7 @@ def get_prediction_service(request: Request) -> PredictionService:
     try:
         return request.app.state.prediction_service
     except AttributeError as error:
-        raise RuntimeError(
+        raise PredictionServiceUnavailableError(
             "No prediction service in application state. One is created "
             "during lifespan startup, so reaching this without one means "
             "the application was not started through its lifespan."
