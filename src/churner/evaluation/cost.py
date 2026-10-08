@@ -18,6 +18,10 @@ precision or recall. A rounded metric cannot be turned back into a count
 without knowing the class balance, and a count is what the cost formula
 multiplies.
 
+The same weights also price the do-nothing baseline, the cost of leaving
+every customer alone. A model's cost means little on its own; it means
+something next to what the business would have spent by not acting.
+
 The weights used by this project are illustrative business assumptions,
 not measured figures: a missed churner is treated as five times as
 expensive as an unnecessary retention offer. They live on
@@ -209,3 +213,62 @@ def calculate_business_cost(
             + false_negative_count * false_negative_cost
         ),
     )
+
+
+def calculate_do_nothing_cost(
+    y_true: LabelSequence,
+    false_negative_cost: float,
+    positive_label: object,
+) -> float:
+    """Charge the baseline strategy that predicts the negative class for everyone.
+
+    Doing nothing means no customer is ever flagged, so there are no
+    false positives to charge for and every actual positive is a false
+    negative. The cost is therefore the number of positive outcomes
+    multiplied by the false-negative weight, and it is the cost a model
+    has to match or beat to be worth deploying.
+
+    No predictions are taken, because the strategy's predictions are
+    implied rather than made. Only the outcomes and one weight are
+    checked: whether the labels are binary does not change which
+    observations are positive. ``y_true`` is copied and only read from.
+
+    Parameters
+    ----------
+    y_true : LabelSequence
+        Recorded outcomes, ordinarily the held-out ``y_test``. Only read
+        from.
+    false_negative_cost : float
+        Cost charged for each positive outcome left unflagged. Zero is
+        permitted.
+    positive_label : object
+        The label standing for the positive class. For this project's
+        ``Churn`` target that is ``"Yes"``.
+
+    Returns
+    -------
+    float
+        The cost of doing nothing on these outcomes.
+
+    Raises
+    ------
+    ValueError
+        If ``y_true`` is empty or ``false_negative_cost`` is negative.
+    """
+    actual_labels = list(y_true)
+
+    if not actual_labels:
+        raise ValueError(
+            "y_true must contain at least one observation; got an empty input, "
+            "and there is no baseline cost to count."
+        )
+
+    if false_negative_cost < 0:
+        raise ValueError(
+            f"false_negative_cost must not be negative; got {false_negative_cost}. "
+            "A negative weight would credit the business for a mistake."
+        )
+
+    positive_count = sum(1 for actual in actual_labels if actual == positive_label)
+
+    return float(positive_count * false_negative_cost)

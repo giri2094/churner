@@ -1,10 +1,15 @@
-"""Unit tests for the business-cost calculation.
+"""Unit tests for the business-cost calculations.
 
 These tests establish the public contract of
 ``calculate_business_cost``: it counts false positives and false
 negatives from the labels themselves, charges them at the weights it was
 given, treats the positive class as something the caller states, refuses
 inputs it cannot count, and leaves those inputs as it found them.
+
+They also establish the contract of ``calculate_do_nothing_cost``, the
+business baseline a model has to beat: a strategy that predicts the
+negative class for everyone misses every actual positive, so its cost is
+the number of positive outcomes charged at the false-negative weight.
 
 The four-row case below is written out here rather than produced by a
 model, so every expected count and total is hand-calculable and a failure
@@ -19,7 +24,11 @@ import pandas as pd
 import pytest
 from pandas.testing import assert_series_equal
 
-from churner.evaluation.cost import CostResult, calculate_business_cost
+from churner.evaluation.cost import (
+    CostResult,
+    calculate_business_cost,
+    calculate_do_nothing_cost,
+)
 
 # --- Illustrative business weights ---
 # A missed churner is treated as five times as expensive as an
@@ -417,3 +426,114 @@ def test_caller_series_and_array_are_not_mutated():
 
     assert_series_equal(actual_labels, pd.Series(ACTUAL_LABELS))
     assert list(predicted_labels) == PREDICTED_LABELS
+
+
+# --- Do-nothing baseline: cost of the strategy that predicts no churn ---
+
+# --- Hand-calculated four-row case ---
+# Two of these four outcomes are positive, and the do-nothing strategy
+# predicts the negative class for all four, so both positives are missed
+# and the baseline costs 2 * 5 = 10. No predictions are supplied, because
+# the strategy's predictions are implied rather than made.
+BASELINE_LABELS = ["No", "Yes", "No", "Yes"]
+EXPECTED_BASELINE_COST = 10.0
+
+
+def test_do_nothing_cost_charges_every_actual_positive():
+    """Predicting no churn misses every churner, at the weight given."""
+    cost = calculate_do_nothing_cost(
+        BASELINE_LABELS,
+        FALSE_NEGATIVE_COST,
+        POSITIVE_LABEL,
+    )
+
+    assert cost == EXPECTED_BASELINE_COST
+
+
+def test_do_nothing_cost_is_zero_without_positives():
+    """Nobody churned, so doing nothing cost nothing."""
+    cost = calculate_do_nothing_cost(
+        ["No", "No", "No"],
+        FALSE_NEGATIVE_COST,
+        POSITIVE_LABEL,
+    )
+
+    assert cost == 0.0
+
+
+def test_do_nothing_cost_charges_all_rows_when_all_are_positive():
+    """Every outcome positive means every one of them is missed: 3 * 5 = 15."""
+    cost = calculate_do_nothing_cost(
+        ["Yes", "Yes", "Yes"],
+        FALSE_NEGATIVE_COST,
+        POSITIVE_LABEL,
+    )
+
+    assert cost == 15.0
+
+
+def test_do_nothing_cost_follows_the_supplied_positive_label():
+    """The baseline is not tied to this project's churn strings.
+
+    Two of these four rows carry the positive label ``1``, so the
+    baseline is 2 * 5 = 10 just as it is for ``"Yes"``.
+    """
+    cost = calculate_do_nothing_cost(
+        [0, 1, 1, 0],
+        FALSE_NEGATIVE_COST,
+        positive_label=1,
+    )
+
+    assert cost == 10.0
+
+
+def test_do_nothing_cost_with_a_zero_weight_is_accepted():
+    """Charging nothing for a missed churner is a valid assumption."""
+    cost = calculate_do_nothing_cost(
+        BASELINE_LABELS,
+        0.0,
+        POSITIVE_LABEL,
+    )
+
+    assert cost == 0.0
+
+
+def test_do_nothing_cost_rejects_a_negative_weight():
+    """A missed churner cannot be worth less than nothing."""
+    with pytest.raises(ValueError, match="false_negative_cost must not be negative"):
+        calculate_do_nothing_cost(
+            BASELINE_LABELS,
+            -5.0,
+            POSITIVE_LABEL,
+        )
+
+
+def test_do_nothing_cost_rejects_empty_labels():
+    """There is no baseline to charge for without observations."""
+    with pytest.raises(ValueError, match="at least one observation"):
+        calculate_do_nothing_cost(
+            [],
+            FALSE_NEGATIVE_COST,
+            POSITIVE_LABEL,
+        )
+
+
+def test_do_nothing_cost_accepts_a_series_and_an_array():
+    """The held-out labels can be passed as the workflow produces them.
+
+    The split hands back a pandas ``Series``; an array of the same labels
+    has to give the same baseline.
+    """
+    series_cost = calculate_do_nothing_cost(
+        pd.Series(BASELINE_LABELS),
+        FALSE_NEGATIVE_COST,
+        POSITIVE_LABEL,
+    )
+    array_cost = calculate_do_nothing_cost(
+        np.array(BASELINE_LABELS),
+        FALSE_NEGATIVE_COST,
+        POSITIVE_LABEL,
+    )
+
+    assert series_cost == EXPECTED_BASELINE_COST
+    assert array_cost == EXPECTED_BASELINE_COST

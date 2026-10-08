@@ -19,13 +19,19 @@ An empty selection is a complete run, not a failure. When the policy
 accepts nothing, no artifact is written and the result says so, with the
 trace that explains which gate ended the decision.
 
+The business assumptions come from the caller's policy, but the baseline
+those assumptions are measured against does not: what doing nothing would
+cost depends on how many customers actually churned, so it belongs to the
+partition the candidates are judged on. The workflow derives it from the
+same ``y_test`` the costs are charged on and passes selection an effective
+policy carrying that figure. The caller's policy is left as it was.
+
 Nothing here reads a file, fits a pipeline, computes a metric, charges a
 cost, or applies a threshold of its own. Every one of those is delegated
-to the module that owns it, and the policy is supplied by the caller
-rather than built here.
+to the module that owns it.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pandas as pd
@@ -33,7 +39,7 @@ from sklearn.pipeline import Pipeline
 
 from churner.data.prepare_modeling_data import prepare_modeling_data
 from churner.evaluation.compare import ModelEvidence, compare_models
-from churner.evaluation.cost import calculate_business_cost
+from churner.evaluation.cost import calculate_business_cost, calculate_do_nothing_cost
 from churner.evaluation.evaluate import evaluate_model
 from churner.evaluation.select import SELECTED, SelectionPolicy, select
 from churner.packaging.model import save_model
@@ -92,7 +98,10 @@ def train_and_promote(
 
     The business cost is charged at the policy's own weights and positive
     label, so the figure the selector compares against its baseline was
-    produced under the same assumptions the policy records.
+    produced under the same assumptions the policy records. The baseline
+    itself is calculated here from the held-out target, and selection is
+    given a copy of the policy carrying it. Nothing else on the policy
+    changes, and the caller's object is not written to.
 
     Parameters
     ----------
@@ -104,7 +113,9 @@ def train_and_promote(
         only when a model is selected.
     selection_policy : SelectionPolicy
         The conditions a candidate has to meet, and the cost weights its
-        errors are charged at. Only read from.
+        errors are charged at. Its ``baseline_do_nothing_cost`` is
+        replaced by the figure measured on this run's test partition.
+        Only read from.
 
     Returns
     -------
@@ -115,6 +126,16 @@ def train_and_promote(
     """
     features, target = prepare_modeling_data(dataframe)
     X_train, X_test, y_train, y_test = split_modeling_data(features, target)
+
+    baseline_do_nothing_cost = calculate_do_nothing_cost(
+        y_true=y_test,
+        false_negative_cost=selection_policy.false_negative_cost,
+        positive_label=selection_policy.positive_label,
+    )
+    effective_policy = replace(
+        selection_policy,
+        baseline_do_nothing_cost=baseline_do_nothing_cost,
+    )
 
     fitted_models: dict[str, Pipeline] = {
         LOGISTIC_REGRESSION_ID: train_logistic(X_train, y_train),
@@ -134,7 +155,7 @@ def train_and_promote(
         model_evidence[model_id] = ModelEvidence(evaluation=evaluation, cost=cost)
 
     comparison = compare_models(model_evidence)
-    selection = select(comparison, selection_policy)
+    selection = select(comparison, effective_policy)
 
     if selection.selection_status != SELECTED or selection.selected_model_id is None:
         return WorkflowResult(
