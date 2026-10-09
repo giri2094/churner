@@ -48,9 +48,47 @@ Repository structure documentation will be updated as development progresses.
 
 ## Current Status
 
-**Milestone 1 — Engineering Environment**
+The end-to-end training path is implemented and runnable:
 
-Project initialization is currently in progress.
+- Dataset loading — `src/churner/data/load_dataset.py`
+- Preprocessing and modeling data preparation — `src/churner/preprocessing`, `src/churner/data/prepare_modeling_data.py`
+- Model training and evaluation — `src/churner/training`, `src/churner/evaluation`
+- Model selection and promotion — `src/churner/workflow/train_and_promote.py`
+- Model persistence — `src/churner/packaging/model.py`
+- Executable training entry point — `scripts/train.py`
+- Prediction serving with FastAPI — `src/churner/api`, `src/churner/serving`
+
+The test suite currently passes: 562 tests passed, with 5 warnings.
+
+Docker, CI/CD, and cloud deployment remain learning goals and are not yet implemented.
+
+---
+
+## Training Workflow
+
+Run the training entry point from the project root:
+
+```bash
+python scripts/train.py
+```
+
+The script reads the raw dataset from `data/raw/WA_Fn-UseC_-Telco-Customer-Churn.csv` and delegates training, evaluation, selection, and promotion to `train_and_promote()` in `src/churner/workflow/train_and_promote.py`. It holds no modeling logic of its own: it resolves the dataset and artifact paths relative to the project root, supplies the selection policy, and reports the outcome.
+
+When a candidate satisfies the selection policy, the selected pipeline is saved to `models/churn_model.joblib` and the script reports the selected model, the selection status, and the artifact path.
+
+When no candidate satisfies the policy, the run is still complete: no artifact is written and none is reported. The decision trace printed alongside the outcome records which gate ended the decision.
+
+Model artifacts are excluded from version control (`*.joblib` in `.gitignore`), so the file is produced locally by running the script.
+
+---
+
+## Tests
+
+Run the test suite from the project root:
+
+```bash
+pytest
+```
 
 ---
 
