@@ -1,0 +1,50 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Virtual environments
+.venv/
+.venv-linux/
+venv/
+env/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Tests & coverage
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Development-only files
+requirements-dev.txt
+scripts/
+docs/
+*.ipynb
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# Training data
+data/
+
+# Reports & build artifacts
+reports/
+build/
+dist/
+
+# Local environment configuration
+.env
+.env.*
+*.local
+
+# OS & logs
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
