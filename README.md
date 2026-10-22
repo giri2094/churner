@@ -85,11 +85,11 @@ The end-to-end training path is implemented and runnable:
 - Prediction serving with FastAPI — `src/churner/api`, `src/churner/serving`
 - Container image serving the trained model — `Dockerfile`
 
-The test suite currently passes: 563 passed, 5 warnings in 16.24 seconds.
+The test suite passes both locally and in GitHub Actions CI, which runs it against Python 3.10.
 
 The Docker image has been built and a container from it has been run and checked: the application starts, the Docker health check reports `healthy`, and the prediction route answers from the artifact baked into the image.
 
-CI/CD and cloud deployment remain learning goals and are not yet implemented. Nothing here publishes an image automatically, deploys to a cloud environment, or monitors a running deployment.
+Continuous integration is implemented: GitHub Actions runs the full pytest suite on pushes to `main` and on pull requests targeting `main`, and the initial run succeeded. The rest of the delivery path remains a learning goal — automated Docker image publishing, cloud deployment, and production monitoring are not yet implemented.
 
 ---
 
